@@ -3,6 +3,7 @@ import websockets
 import json
 import logging
 from fastapi import FastAPI, HTTPException
+from fastapi.middleware.cors import CORSMiddleware
 from typing import List, Optional
 from models import CvInput, JdInput, CvMatchResult, ProjectInput, LanguageInput
 from ai_agent import match_cvs_with_agent
@@ -14,6 +15,16 @@ load_dotenv()
 JWT_TOKEN = os.getenv("JWT_TOKEN")
 
 app = FastAPI()
+
+# Cấu hình CORS
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["http://localhost:5173"],
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
+
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
@@ -92,7 +103,7 @@ async def match_all_cvs(job_id: str, skill_filter: Optional[str] = None):
                     "skills": next(cv["skills"] for cv in cv_data if cv["id"] == result.cv_id),
                     "feedback": None
                 }
-                await client.post("http://localhost:8080/evaluations", json=evaluation, headers=headers)
+                await client.post("http://localhost:8080/api/v1/evaluations", json=evaluation, headers=headers)
 
         top_cvs = [r for r in results if r.score > 80][:5]
         if top_cvs:

@@ -9,6 +9,10 @@ from dotenv import load_dotenv
 import os
 import logging
 
+# Cấu hình logging
+logging.basicConfig(level=logging.INFO)
+logger = logging.getLogger(__name__)
+
 # Initialize NLTK data
 def init_nltk():
     try:
