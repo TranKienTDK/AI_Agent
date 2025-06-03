@@ -1,5 +1,4 @@
 import asyncio
-import websockets
 import json
 import logging
 import httpx
@@ -203,16 +202,9 @@ async def match_cvs_with_learning(cvs: List[CvInput], jd: JdInput, apply_ids: Li
                     f"Experience: CV {cv_years:.1f} years vs JD {jd_years:.1f} years ({experience_score/30*100:.2f}% match); "
                     f"Education: {'Matched' if education_score > 0 else 'Not matched'}; "
                     f"Certifications: Matched {len(set(cv_data.certifications).intersection(jd_data.certifications))}/{len(jd_data.certifications)} certifications ({certification_score/10*100:.2f}%)"
-                )
-
-                logger.info(f"CV {cv.cv_id} final score: {final_score}")
+                )                logger.info(f"CV {cv.cv_id} final score: {final_score}")
                 results.append(CvMatchResult(cv_id=cv.cv_id, score=final_score, explanation=explanation))
                 await save_evaluation(cv.cv_id, jd.job_id, apply_id, final_score, cv_data.skills, explanation)
-
-                # Notify HR if score is high
-                if final_score > 80:
-                    logger.info(f"Preparing to notify HR for CV {cv.cv_id} with score {final_score}")
-                    await notify_hr(f"High-scoring CV detected: {cv.cv_id} with score {final_score}")
 
             except Exception as e:
                 logger.error(f"Error processing CV {cv.cv_id}: {str(e)}")
@@ -222,28 +214,12 @@ async def match_cvs_with_learning(cvs: List[CvInput], jd: JdInput, apply_ids: Li
 
         results.sort(key=lambda x: x.score, reverse=True)
         logger.info(f"Returning {len(results)} results")
-        return results
-
-    except ValueError as e:
+        return results    except ValueError as e:
         logger.error(f"Validation error: {str(e)}")
         raise
     except Exception as e:
         logger.error(f"Internal server error: {str(e)}")
         raise
 
-async def websocket_server():
-    """Run WebSocket server for HR notifications"""
-    async def handler(websocket, path):
-        logger.info("WebSocket client connected")
-        try:
-            async for message in websocket:
-                logger.info(f"Received message from HR: {message}")
-                await websocket.send(f"Server received: {message}")
-        except websockets.exceptions.ConnectionClosed:
-            logger.info("WebSocket client disconnected")
-    logger.info("Starting WebSocket server on ws://localhost:8765")
-    server = await websockets.serve(handler, "localhost", 8765)
-    await server.wait_closed()
-
 if __name__ == "__main__":
-    asyncio.run(websocket_server())
+    pass

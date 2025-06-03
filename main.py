@@ -1,5 +1,4 @@
 import httpx
-import websockets
 import json
 import logging
 from fastapi import FastAPI, HTTPException
@@ -94,7 +93,7 @@ async def match_all_cvs(job_id: str, skill_filter: Optional[str] = None):
         results = await match_cvs_with_agent(cvs, jd)
 
         async with httpx.AsyncClient() as client:
-            for result in results:
+            for result in results:                
                 evaluation = {
                     "cvId": result.cv_id,
                     "jobId": job_id,
@@ -104,15 +103,6 @@ async def match_all_cvs(job_id: str, skill_filter: Optional[str] = None):
                     "feedback": None
                 }
                 await client.post("http://localhost:8080/api/v1/evaluations", json=evaluation, headers=headers)
-
-        top_cvs = [r for r in results if r.score > 80][:5]
-        if top_cvs:
-            async with websockets.connect('ws://localhost:8765') as websocket:
-                message = f"Top CVs for job {job_id}: " + "; ".join(
-                    [f"CV {r.cv_id} (Score: {r.score}, Email: {r.email}, Phone: {r.phone})" for r in top_cvs]
-                )
-                await websocket.send(message)
-                logger.info(f"Sent notification to HR: {message}")
 
         return results
     except httpx.HTTPStatusError as e:

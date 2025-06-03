@@ -1,5 +1,4 @@
 import asyncio
-import websockets
 import json
 import csv
 import logging
@@ -13,11 +12,6 @@ logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
 sbert_model = SentenceTransformer('all-MiniLM-L6-v2')
-
-async def notify_hr(message: str):
-    async with websockets.connect('ws://localhost:8765') as websocket:
-        await websocket.send(message)
-        logger.info(f"Sent notification to HR: {message}")
 
 def save_evaluation_result(cv_id: str, score: float, feedback: str = None):
     file_exists = os.path.isfile('evaluations.csv')
@@ -57,12 +51,9 @@ async def match_cvs_with_agent(cvs: List[CvInput], jd: JdInput) -> List[CvMatchR
 
                 save_evaluation_result(cv_id=cv.cv_id, score=score)
 
-                if score > 80:
-                    await notify_hr(f"High-scoring CV detected: {cv.cv_id} with score {score}")
-
             except Exception as e:
                 logger.error(f"Error processing CV {cv.cv_id}: {str(e)}")
-                results.append(CvMatchResult(
+                results.append(CvMatchResult(                    
                     cv_id=cv.cv_id,
                     score=0.0,
                     explanation=f"Error: {str(e)}",
@@ -81,12 +72,5 @@ async def match_cvs_with_agent(cvs: List[CvInput], jd: JdInput) -> List[CvMatchR
         logger.error(f"Internal server error: {str(e)}")
         raise
 
-async def websocket_server():
-    async def handler(websocket, path):
-        async for message in websocket:
-            logger.info(f"Received message from HR: {message}")
-    server = await websockets.serve(handler, "localhost", 8765)
-    await server.wait_closed()
-
 if __name__ == "__main__":
-    asyncio.run(websocket_server())
+    pass
