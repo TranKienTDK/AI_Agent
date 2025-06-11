@@ -3,7 +3,7 @@ import json
 import csv
 import logging
 from sentence_transformers import SentenceTransformer, util
-from gemini_service import normalize_data, calculate_relevance
+from openai_service import normalize_data, calculate_relevance
 from models import CvInput, JdInput, CvMatchResult
 from typing import List
 import os

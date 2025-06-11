@@ -1,7 +1,18 @@
+# Web Framework & Server
 fastapi==0.115.0
 uvicorn==0.30.6
+
+# HTTP Client & Environment
 httpx==0.27.2
 python-dotenv==1.0.1
+
+# Data Validation & Processing
 pydantic==2.9.2
 nltk==3.8.1
+
+# AI & ML Libraries
+openai==1.54.3
 sentence-transformers==2.7.0
+
+# Additional utilities for OpenAI integration
+tiktoken==0.8.0
