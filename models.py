@@ -29,6 +29,7 @@ class JdInput(BaseModel):
     required_education: Optional[str] = None
     required_certifications: Optional[List[str]] = None
     text: Optional[str] = None
+    job_id: Optional[str] = None  # Add job_id field for AI Agent processing
 
 class CvMatchResult(BaseModel):
     cv_id: str

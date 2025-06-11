@@ -1,12 +1,14 @@
 import httpx
 import json
 import logging
+import time
 from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from typing import List, Optional
 from models import CvInput, JdInput, CvMatchResult, ProjectInput, LanguageInput, AIAgentRecommendation
 from ai_agent import match_cvs_with_agent
 from ai_agent_controller import ai_agent_controller
+from agent_integration_service import agent_integration_service
 import uvicorn
 from dotenv import load_dotenv
 import os
@@ -45,19 +47,23 @@ async def match_cvs(cvs: List[CvInput], jd: JdInput):
         raise HTTPException(status_code=500, detail=f"Internal server error: {str(e)}")
 
 @app.post("/match-all/{job_id}")
-async def match_all_cvs(job_id: str, skill_filter: Optional[str] = None):
+async def match_all_cvs(job_id: str, skill_filter: Optional[str] = None, use_ai_agents: bool = True):
     """
     Đánh giá tất cả CV trong hệ thống với JD và trả về kết quả kèm đề xuất hành động
+    Enhanced with AI Agent system for optimized performance (1+2N → 1+2×ceil(N/batch_size) LLM calls)
     """
     try:
         headers = {"Authorization": f"Bearer {JWT_TOKEN}"}
 
+        # Get job data
         async with httpx.AsyncClient() as client:
             job_response = await client.get(f"http://localhost:8080/api/v1/job/{job_id}")
             job_response.raise_for_status()
             job_data = job_response.json()
             logger.info(f"JD response: {job_data}")
             description = job_data.get("data", {}).get("description", "") or "No job description provided"
+            
+            # Create enhanced JD input with job_id for agent system
             jd = JdInput(
                 required_skills=job_data.get("data", {}).get("skillNames", []),
                 required_experience=description,
@@ -65,12 +71,19 @@ async def match_all_cvs(job_id: str, skill_filter: Optional[str] = None):
                 required_certifications=[],
                 text=description
             )
-
+            # Add job_id for agent processing
+            jd.job_id = job_id        # Get CV data with jobId parameter to filter evaluated CVs
         async with httpx.AsyncClient() as client:
-            cv_response = await client.get("http://localhost:8080/api/v1/cv/all", headers=headers)
+            # Add jobId parameter to get CVs that haven't been evaluated for this job
+            cv_response = await client.get(
+                "http://localhost:8080/api/v1/cv/all", 
+                headers=headers,
+                params={"jobId": job_id}
+            )
             cv_response.raise_for_status()
             cv_data = cv_response.json()["data"]
-            logger.info(f"CV data: {cv_data}")
+            logger.info(f"CV data count for job {job_id}: {len(cv_data)}")
+            
             cvs = [
                 CvInput(
                     cv_id=cv["id"],
@@ -94,12 +107,12 @@ async def match_all_cvs(job_id: str, skill_filter: Optional[str] = None):
                     ],
                     text=cv.get("profile", "") + " " + cv.get("additionalInfo", ""),
                     email=cv.get("info", {}).get("email", ""),
-                    phone=cv.get("info", {}).get("phone", "")                ) for cv in cv_data
+                    phone=cv.get("info", {}).get("phone", "")
+                ) for cv in cv_data
             ]
-        
-        # Kiểm tra nếu không có CV nào để đánh giá
+          # Check if no CVs to evaluate
         if not cvs:
-            logger.info(f"No CVs found for evaluation with job {job_id}")
+            logger.info(f"No unevaluated CVs found for job {job_id}")
             return {
                 "job_id": job_id,
                 "total_candidates": 0,
@@ -109,23 +122,37 @@ async def match_all_cvs(job_id: str, skill_filter: Optional[str] = None):
                     "save_cv": 0,
                     "no_recommendation": 0
                 },
-                "message": "Không có CV nào trong hệ thống để đánh giá cho vị trí này."
+                "message": "Không có CV nào chưa được đánh giá cho vị trí này. Tất cả CV đã được xử lý trước đó.",
+                "processing_method": "none"
             }
         
-        # Thực hiện matching và tạo recommendations
-        results = await match_cvs_with_agent(cvs, jd)
-          # Thêm recommended actions cho mỗi result
-        for result in results:
-            # Tạo recommendations dựa trên score - chỉ 2 action types
-            if result.score >= 80:
-                result.recommended_action = "send_contact_email"
-                result.action_reason = f"Ứng viên rất tiềm năng với {result.score}% độ phù hợp. Nên liên hệ ngay."
-            elif result.score >= 50:
-                result.recommended_action = "save_cv"
-                result.action_reason = f"Ứng viên khá tiềm năng với {result.score}% độ phù hợp. Nên lưu lại cho tương lai."
-            else:
-                result.recommended_action = None  # No action for low scores
-                result.action_reason = f"Ứng viên có {result.score}% độ phù hợp, chưa đạt tiêu chuẩn tối thiểu."        # Lưu evaluation results vào backend
+        # Choose processing method based on use_ai_agents flag
+        if use_ai_agents and len(cvs) > 3:
+            logger.info(f"Using AI Agent system for {len(cvs)} CVs - optimized batch processing")
+            results = await agent_integration_service.match_cvs_with_agents(
+                cvs=cvs, 
+                jd=jd, 
+                use_batch_processing=True,
+                batch_size=20
+            )
+            processing_method = "ai_agents_batch"
+        else:
+            logger.info(f"Using traditional processing for {len(cvs)} CVs")
+            results = await match_cvs_with_agent(cvs, jd)
+            # Add recommended actions for traditional processing
+            for result in results:
+                if result.score >= 80:
+                    result.recommended_action = "send_contact_email"
+                    result.action_reason = f"Ứng viên rất tiềm năng với {result.score}% độ phù hợp. Nên liên hệ ngay."
+                elif result.score >= 50:
+                    result.recommended_action = "save_cv"
+                    result.action_reason = f"Ứng viên khá tiềm năng với {result.score}% độ phù hợp. Nên lưu lại cho tương lai."
+                else:
+                    result.recommended_action = None
+                    result.action_reason = f"Ứng viên có {result.score}% độ phù hợp, chưa đạt tiêu chuẩn tối thiểu."            
+                    processing_method = "traditional"
+        
+        # Save evaluation results to backend
         async with httpx.AsyncClient() as client:
             for result in results:
                 # Extract skill names as strings for the evaluation
@@ -157,6 +184,12 @@ async def match_all_cvs(job_id: str, skill_filter: Optional[str] = None):
                 "send_contact_email": len([r for r in results if r.recommended_action == "send_contact_email"]),
                 "save_cv": len([r for r in results if r.recommended_action == "save_cv"]),
                 "no_recommendation": len([r for r in results if r.recommended_action is None])
+            },            
+            "processing_method": processing_method,
+            "ai_agent_optimization": {
+                "enabled": use_ai_agents and len(cvs) > 3,
+                "batch_size": 20 if use_ai_agents else 1,
+                "estimated_llm_calls_saved": max(0, len(cvs) * 2 - 2 * ((len(cvs) + 19) // 20)) if use_ai_agents and len(cvs) > 3 else 0
             }
         }
     except httpx.HTTPStatusError as e:
@@ -276,5 +309,201 @@ async def execute_recommended_action(
         logger.error(f"Error executing action {action_type}: {str(e)}")
         raise HTTPException(status_code=500, detail=f"Internal server error: {str(e)}")
 
+@app.post("/ai-agent/match-all/{job_id}")
+async def ai_agent_match_all(job_id: str, batch_size: int = 20, priority: str = "normal"):
+    """
+    AI Agent enhanced endpoint for batch CV-JD matching with optimized performance
+    Uses 1+2×ceil(N/batch_size) LLM calls instead of 1+2N calls
+    """
+    try:
+        headers = {"Authorization": f"Bearer {JWT_TOKEN}"}
+          # Get job and CV data with jobId parameter for filtering
+        async with httpx.AsyncClient() as client:
+            job_response = await client.get(f"http://localhost:8080/api/v1/job/{job_id}")
+            job_response.raise_for_status()
+            job_data = job_response.json()
+            
+            # Add jobId parameter to get CVs that haven't been evaluated for this job
+            cv_response = await client.get(
+                "http://localhost:8080/api/v1/cv/all", 
+                headers=headers,
+                params={"jobId": job_id}
+            )            
+            cv_response.raise_for_status()
+            cv_data = cv_response.json()["data"]
+            
+        if not cv_data:
+            return {
+                "job_id": job_id,
+                "total_candidates": 0,
+                "status": "no_candidates",
+                "message": "No unevaluated CVs found for this job. All CVs may have been processed already."
+            }
+        
+        cv_ids = [cv["id"] for cv in cv_data]
+        
+        # Submit batch job to AI Agent system
+        batch_job_id = await agent_integration_service.batch_service.submit_batch_job(
+            job_id=job_id,
+            cv_ids=cv_ids,
+            batch_size=batch_size,
+            priority=priority
+        )
+        
+        # Return job status for tracking
+        return {
+            "job_id": job_id,
+            "batch_job_id": batch_job_id,
+            "total_candidates": len(cv_ids),
+            "batch_size": batch_size,
+            "priority": priority,
+            "status": "submitted",
+            "estimated_llm_calls": 1 + 2 * ((len(cv_ids) + batch_size - 1) // batch_size),
+            "optimization_ratio": f"{1 + 2 * len(cv_ids)} → {1 + 2 * ((len(cv_ids) + batch_size - 1) // batch_size)}",
+            "message": "Batch job submitted successfully. Use /ai-agent/status/{batch_job_id} to track progress."
+        }
+        
+    except Exception as e:
+        logger.error(f"Error in AI agent batch processing: {str(e)}")
+        raise HTTPException(status_code=500, detail=f"AI Agent processing failed: {str(e)}")
+
+@app.get("/ai-agent/status/{batch_job_id}")
+async def get_batch_job_status(batch_job_id: str):
+    """
+    Get status of AI Agent batch processing job
+    """
+    try:
+        status = await agent_integration_service.batch_service.get_job_status(batch_job_id)
+        
+        if not status:
+            raise HTTPException(status_code=404, detail="Batch job not found")
+        
+        return status
+        
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Error getting batch job status: {str(e)}")
+        raise HTTPException(status_code=500, detail=f"Failed to get job status: {str(e)}")
+
+@app.get("/ai-agent/result/{batch_job_id}")
+async def get_batch_job_result(batch_job_id: str):
+    """
+    Get result of completed AI Agent batch processing job
+    """
+    try:
+        result = await agent_integration_service.batch_service.get_job_result(batch_job_id)
+        
+        if not result:
+            status = await agent_integration_service.batch_service.get_job_status(batch_job_id)
+            if not status:
+                raise HTTPException(status_code=404, detail="Batch job not found")
+            elif status["status"] != "completed":
+                raise HTTPException(status_code=400, detail=f"Job not completed. Current status: {status['status']}")
+            else:
+                raise HTTPException(status_code=500, detail="Job completed but result not available")
+        
+        # Convert to API format
+        api_results = []
+        for match in result.results:
+            api_results.append({
+                "cv_id": match.cv_id,
+                "score": match.overall_score,
+                "explanation": match.explanation,
+                "recommended_action": match.recommended_action,
+                "action_reason": match.action_reason,
+                "detailed_scores": {
+                    "skill_match": match.skill_match_score,
+                    "experience_match": match.experience_match_score,
+                    "education_match": match.education_match_score,
+                    "cultural_fit": match.cultural_fit_score,
+                    "growth_potential": match.growth_potential_score
+                },
+                "skills_analysis": {
+                    "matched": match.matched_skills,
+                    "missing": match.missing_skills,
+                    "transferable": match.transferable_skills
+                },
+                "confidence": match.confidence
+            })
+        
+        return {
+            "job_id": result.job_id,
+            "total_candidates": result.total_cvs,
+            "processed_candidates": result.processed_cvs,
+            "failed_candidates": result.failed_cvs,
+            "processing_time": result.processing_time,
+            "results": api_results,
+            "summary": result.summary,
+            "errors": result.errors
+        }
+        
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Error getting batch job result: {str(e)}")
+        raise HTTPException(status_code=500, detail=f"Failed to get job result: {str(e)}")
+
+@app.get("/ai-agent/health")
+async def ai_agent_health_check():
+    """
+    Health check for AI Agent system
+    """
+    try:
+        health = await agent_integration_service.get_service_health()
+        return health
+        
+    except Exception as e:
+        logger.error(f"AI Agent health check failed: {str(e)}")
+        return {
+            "status": "unhealthy",
+            "error": str(e),
+            "timestamp": time.time()
+        }
+
+@app.get("/ai-agent/metrics")
+async def ai_agent_metrics():
+    """
+    Get AI Agent system performance metrics
+    """
+    try:
+        metrics = await agent_integration_service.get_performance_metrics()
+        return metrics
+        
+    except Exception as e:
+        logger.error(f"Failed to get AI Agent metrics: {str(e)}")
+        raise HTTPException(status_code=500, detail=f"Failed to get metrics: {str(e)}")
+
 if __name__ == "__main__":
-    uvicorn.run(app, host="0.0.0.0", port=8000)
+    import socket
+    
+    def find_free_port(start_port=8000, max_attempts=10):
+        """Find a free port starting from start_port"""
+        for port in range(start_port, start_port + max_attempts):
+            try:
+                with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
+                    s.bind(("0.0.0.0", port))
+                    return port
+            except OSError:
+                continue
+        raise RuntimeError(f"Could not find a free port in range {start_port}-{start_port + max_attempts}")
+    
+    try:
+        port = find_free_port(8000)
+        print("🚀 Starting AI Agent Service...")
+        print(f"📡 Service will be available at: http://localhost:{port}")
+        print(f"📚 API Documentation: http://localhost:{port}/docs")
+        print(f"🔄 Health Check: http://localhost:{port}/ai-agent/health")
+        print("=" * 60)
+        
+        uvicorn.run(
+            app, 
+            host="0.0.0.0", 
+            port=port,
+            log_level="info",
+            reload=False
+        )
+    except Exception as e:
+        print(f"❌ Failed to start server: {e}")
+        print("💡 Try stopping any existing servers on port 8000 or restart your terminal")
+        exit(1)

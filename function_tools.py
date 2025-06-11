@@ -242,6 +242,44 @@ class AIAgentTools:
                 "message": "Failed to match CV with Job"
             }
     
+    async def get_raw_cv_data(self, cv_id: str) -> Dict[str, Any]:
+        """
+        Lấy dữ liệu CV thô (raw) từ API - dùng cho AI Agents
+        
+        Args:
+            cv_id: ID của CV cần lấy
+            
+        Returns:
+            Dict chứa raw CV data từ API
+        """
+        try:
+            async with httpx.AsyncClient() as client:
+                url = f"{self.base_url}/cv/{cv_id}"
+                response = await client.get(url, headers=self.headers)
+                response.raise_for_status()
+                cv_data = response.json()["data"]
+                
+                return {
+                    "success": True,
+                    "data": cv_data,  # Return raw API data, not converted
+                    "message": f"Successfully retrieved raw CV {cv_id}"
+                }
+                
+        except httpx.HTTPStatusError as e:
+            logger.error(f"HTTP error getting CV {cv_id}: {e}")
+            return {
+                "success": False,
+                "error": f"HTTP {e.response.status_code}: {e.response.text}",
+                "data": None
+            }
+        except Exception as e:
+            logger.error(f"Error getting CV {cv_id}: {str(e)}")
+            return {
+                "success": False,
+                "error": str(e),
+                "data": None
+            }
+
     def _convert_to_cv_input(self, cv_data: dict) -> CvInput:
         """
         Convert API CV data to CvInput model
