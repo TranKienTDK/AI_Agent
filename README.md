@@ -2,9 +2,20 @@
 
 ## 📋 Tổng quan hệ thống
 
-Hệ thống AI Agent được thiết kế để tự động hóa quá trình đánh giá và so khớp CV với Job Description (JD), sử dụng kiến trúc đa AI Agent chuyên biệt để tối ưu hiệu suất và độ chính xác.
+Hệ thống AI Agent được thiết kế để tự động hóa quá trình đánh giá và so khớp CV với Job Description (JD) thông qua API `/match-all/{job_id}` với `use_ai_agents=true`. Sử dụng kiến trúc đa AI Agent chuyên biệt để tối ưu hiệu suất và độ chính xác.
 
-## 🏗️ Kiến trúc hệ thống
+## � API Chính
+
+### `/match-all/{job_id}?use_ai_agents=true`
+
+API chính của hệ thống, tự động:
+- Lấy thông tin Job Description theo `job_id`
+- Lấy danh sách CV chưa được đánh giá cho job này
+- Sử dụng AI Agent system để batch processing
+- Trả về kết quả với recommended actions
+- Lưu kết quả đánh giá vào database
+
+## �🏗️ Kiến trúc hệ thống
 
 ### Kiến trúc AI Agent đa tầng
 
@@ -27,27 +38,6 @@ Hệ thống AI Agent được thiết kế để tự động hóa quá trình 
 │           (Agent đánh giá so khớp)              │
 └─────────────────────────────────────────────────┘
 ```
-
-### Phân công nhiệm vụ cụ thể
-
-#### 🎯 JD Analyzer Agent
-**Chức năng chính:**
-- Phân tích và trích xuất thông tin có cấu trúc từ Job Description
-- Phân loại skills theo mức độ ưu tiên (must-have vs nice-to-have)
-- Đánh giá ngữ cảnh công việc và yêu cầu kinh nghiệm
-- Xác định soft skills và cultural fit requirements
-
-**Input:** Job JSON data từ Backend API
-**Output:** Structured JD Analysis Object
-
-#### 👤 CV Analyzer Agent  
-**Chức năng chính:**
-- Phân tích thông tin CV và trích xuất skills, experience
-- Đánh giá career progression và stability
-- Phát hiện strengths, weaknesses và growth potential
-- Detect red flags và unique selling points
-
-**Input:** CV JSON data từ Backend API (có thể xử lý batch)
 **Output:** List[Structured CV Analysis Objects]
 
 #### 🔗 Matching Agent
@@ -420,5 +410,3 @@ python demo_performance.py
 - Error handling với proper exception types
 
 ---
-
-*Tài liệu này sẽ được cập nhật liên tục trong quá trình phát triển.*

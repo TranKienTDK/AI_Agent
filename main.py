@@ -5,17 +5,11 @@ import time
 from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from typing import List, Optional
-from models import CvInput, JdInput, CvMatchResult, ProjectInput, LanguageInput, AIAgentRecommendation
-from ai_agent import match_cvs_with_agent
-from ai_agent_controller import ai_agent_controller
+from models import CvInput, JdInput, CvMatchResult, ProjectInput, LanguageInput
 from agent_integration_service import agent_integration_service
 import uvicorn
 from dotenv import load_dotenv
 import os
-from cv_evaluation_system import (
-    EvaluationRequest, EvaluationResult,
-    cv_evaluation_system
-)
 
 load_dotenv()
 JWT_TOKEN = os.getenv("JWT_TOKEN")
@@ -34,17 +28,26 @@ app.add_middleware(
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
-@app.post("/match", response_model=List[CvMatchResult])
-async def match_cvs(cvs: List[CvInput], jd: JdInput):
+async def match_cvs_with_agent(cvs: List[CvInput], jd: JdInput) -> List[CvMatchResult]:
+    """
+    Fallback function - sử dụng agent_integration_service
+    """
     try:
-        results = await match_cvs_with_agent(cvs, jd)
-        return results
-    except ValueError as e:
-        logger.error(f"Validation error: {str(e)}")
-        raise HTTPException(status_code=400, detail=f"Invalid input: {str(e)}")
+        return await agent_integration_service.match_cvs_with_agents(
+            cvs=cvs, 
+            jd=jd, 
+            use_batch_processing=False
+        )
     except Exception as e:
-        logger.error(f"Internal server error: {str(e)}")
-        raise HTTPException(status_code=500, detail=f"Internal server error: {str(e)}")
+        logger.error(f"Fallback matching failed: {str(e)}")
+        # Return empty results with error
+        return [CvMatchResult(
+            cv_id=cv.cv_id,
+            score=0.0,
+            explanation=f"Error: {str(e)}",
+            email=cv.email,
+            phone=cv.phone
+        ) for cv in cvs]
 
 @app.post("/match-all/{job_id}")
 async def match_all_cvs(job_id: str, skill_filter: Optional[str] = None, use_ai_agents: bool = True):
@@ -189,8 +192,7 @@ async def match_all_cvs(job_id: str, skill_filter: Optional[str] = None, use_ai_
             "ai_agent_optimization": {
                 "enabled": use_ai_agents and len(cvs) > 3,
                 "batch_size": 20 if use_ai_agents else 1,
-                "estimated_llm_calls_saved": max(0, len(cvs) * 2 - 2 * ((len(cvs) + 19) // 20)) if use_ai_agents and len(cvs) > 3 else 0
-            }
+                "estimated_llm_calls_saved": max(0, len(cvs) * 2 - 2 * ((len(cvs) + 19) // 20)) if use_ai_agents and len(cvs) > 3 else 0            }
         }
     except httpx.HTTPStatusError as e:
         logger.error(f"HTTP error: {e.response.status_code} - {e.response.text}")
@@ -198,281 +200,6 @@ async def match_all_cvs(job_id: str, skill_filter: Optional[str] = None, use_ai_
     except Exception as e:
         logger.error(f"Internal server error: {str(e)}")
         raise HTTPException(status_code=500, detail=f"Internal server error: {str(e)}")
-
-@app.post("/evaluation/batch", response_model=EvaluationResult)
-async def batch_evaluation(request: EvaluationRequest):
-    """
-    Đánh giá hàng loạt CV cho một job position
-    """
-    try:
-        result = await cv_evaluation_system.evaluate_candidates(request)
-        return result
-    except Exception as e:
-        logger.error(f"Error in batch evaluation: {str(e)}")
-        raise HTTPException(status_code=500, detail=f"Internal server error: {str(e)}")
-
-@app.post("/evaluation/single/{cv_id}/{job_id}")
-async def single_evaluation(cv_id: str, job_id: str, save_result: bool = True):
-    """
-    Đánh giá một CV cụ thể cho một job
-    """
-    try:
-        result = await cv_evaluation_system.evaluate_single_cv(cv_id, job_id, save_result)
-        return result
-    except Exception as e:
-        logger.error(f"Error in single evaluation: {str(e)}")
-        raise HTTPException(status_code=500, detail=f"Internal server error: {str(e)}")
-
-@app.get("/evaluation/top-candidates/{job_id}")
-async def get_top_candidates(job_id: str, top_n: int = 5):
-    """
-    Lấy top N ứng viên phù hợp nhất cho một job
-    """
-    try:
-        result = await cv_evaluation_system.get_top_candidates(job_id, top_n)
-        return result
-    except Exception as e:
-        logger.error(f"Error getting top candidates: {str(e)}")
-        raise HTTPException(status_code=500, detail=f"Internal server error: {str(e)}")
-
-@app.get("/evaluation/status/{job_id}")
-async def get_evaluation_status(job_id: str):
-    """
-    Kiểm tra trạng thái đánh giá cho một job
-    """
-    try:
-        # Có thể mở rộng để tracking evaluation progress
-        return {
-            "job_id": job_id,
-            "status": "ready",
-            "message": "Evaluation system is ready"
-        }
-    except Exception as e:
-        logger.error(f"Error checking evaluation status: {str(e)}")
-        raise HTTPException(status_code=500, detail=f"Internal server error: {str(e)}")
-
-@app.post("/ai-agent/recommend/{cv_id}/{job_id}", response_model=AIAgentRecommendation)
-async def get_ai_recommendations(cv_id: str, job_id: str):
-    """
-    Get AI Agent recommendations for a specific CV-Job match
-    HR can review recommendations and decide which actions to take
-    """
-    try:
-        recommendation = await ai_agent_controller.get_recommendations_for_match(cv_id, job_id)
-        return recommendation
-    except Exception as e:
-        logger.error(f"Error getting AI recommendations: {str(e)}")
-        raise HTTPException(status_code=500, detail=f"Internal server error: {str(e)}")
-
-@app.post("/ai-agent/execute-action")
-async def execute_recommended_action(
-    action_type: str,
-    cv_id: str, 
-    job_id: str,
-    score: float = None,
-    explanation: str = None,
-    skills: List[str] = None
-):
-    """
-    Execute a specific action recommended by AI Agent
-    This allows HR to selectively execute only approved actions
-    """
-    try:
-        if action_type == "save_evaluation":
-            if not all([score is not None, explanation]):
-                raise HTTPException(status_code=400, detail="Score and explanation required for save_evaluation")
-                
-            # Execute save_evaluation 
-            from function_tools import ai_tools
-            result = await ai_tools.save_evaluation(cv_id, job_id, score, explanation, skills)
-            return {
-                "success": True,
-                "action_executed": action_type,
-                "result": result,
-                "message": f"Successfully executed {action_type} for CV {cv_id} and Job {job_id}"
-            }
-        else:
-            return {
-                "success": True,
-                "action_executed": action_type,
-                "message": f"Action '{action_type}' noted. Please handle this action manually in your HR system.",
-                "instructions": {
-                    "approve_candidate": "Contact candidate and proceed with hiring process",
-                    "request_interview": "Schedule interview with candidate", 
-                    "request_more_info": "Request additional information from candidate",
-                    "save_for_later": "Add candidate to talent pool for future opportunities",
-                    "reject_candidate": "Send rejection notification to candidate"
-                }.get(action_type, "Handle this action according to your HR procedures")
-            }
-            
-    except Exception as e:
-        logger.error(f"Error executing action {action_type}: {str(e)}")
-        raise HTTPException(status_code=500, detail=f"Internal server error: {str(e)}")
-
-@app.post("/ai-agent/match-all/{job_id}")
-async def ai_agent_match_all(job_id: str, batch_size: int = 20, priority: str = "normal"):
-    """
-    AI Agent enhanced endpoint for batch CV-JD matching with optimized performance
-    Uses 1+2×ceil(N/batch_size) LLM calls instead of 1+2N calls
-    """
-    try:
-        headers = {"Authorization": f"Bearer {JWT_TOKEN}"}
-          # Get job and CV data with jobId parameter for filtering
-        async with httpx.AsyncClient() as client:
-            job_response = await client.get(f"http://localhost:8080/api/v1/job/{job_id}")
-            job_response.raise_for_status()
-            job_data = job_response.json()
-            
-            # Add jobId parameter to get CVs that haven't been evaluated for this job
-            cv_response = await client.get(
-                "http://localhost:8080/api/v1/cv/all", 
-                headers=headers,
-                params={"jobId": job_id}
-            )            
-            cv_response.raise_for_status()
-            cv_data = cv_response.json()["data"]
-            
-        if not cv_data:
-            return {
-                "job_id": job_id,
-                "total_candidates": 0,
-                "status": "no_candidates",
-                "message": "No unevaluated CVs found for this job. All CVs may have been processed already."
-            }
-        
-        cv_ids = [cv["id"] for cv in cv_data]
-        
-        # Submit batch job to AI Agent system
-        batch_job_id = await agent_integration_service.batch_service.submit_batch_job(
-            job_id=job_id,
-            cv_ids=cv_ids,
-            batch_size=batch_size,
-            priority=priority
-        )
-        
-        # Return job status for tracking
-        return {
-            "job_id": job_id,
-            "batch_job_id": batch_job_id,
-            "total_candidates": len(cv_ids),
-            "batch_size": batch_size,
-            "priority": priority,
-            "status": "submitted",
-            "estimated_llm_calls": 1 + 2 * ((len(cv_ids) + batch_size - 1) // batch_size),
-            "optimization_ratio": f"{1 + 2 * len(cv_ids)} → {1 + 2 * ((len(cv_ids) + batch_size - 1) // batch_size)}",
-            "message": "Batch job submitted successfully. Use /ai-agent/status/{batch_job_id} to track progress."
-        }
-        
-    except Exception as e:
-        logger.error(f"Error in AI agent batch processing: {str(e)}")
-        raise HTTPException(status_code=500, detail=f"AI Agent processing failed: {str(e)}")
-
-@app.get("/ai-agent/status/{batch_job_id}")
-async def get_batch_job_status(batch_job_id: str):
-    """
-    Get status of AI Agent batch processing job
-    """
-    try:
-        status = await agent_integration_service.batch_service.get_job_status(batch_job_id)
-        
-        if not status:
-            raise HTTPException(status_code=404, detail="Batch job not found")
-        
-        return status
-        
-    except HTTPException:
-        raise
-    except Exception as e:
-        logger.error(f"Error getting batch job status: {str(e)}")
-        raise HTTPException(status_code=500, detail=f"Failed to get job status: {str(e)}")
-
-@app.get("/ai-agent/result/{batch_job_id}")
-async def get_batch_job_result(batch_job_id: str):
-    """
-    Get result of completed AI Agent batch processing job
-    """
-    try:
-        result = await agent_integration_service.batch_service.get_job_result(batch_job_id)
-        
-        if not result:
-            status = await agent_integration_service.batch_service.get_job_status(batch_job_id)
-            if not status:
-                raise HTTPException(status_code=404, detail="Batch job not found")
-            elif status["status"] != "completed":
-                raise HTTPException(status_code=400, detail=f"Job not completed. Current status: {status['status']}")
-            else:
-                raise HTTPException(status_code=500, detail="Job completed but result not available")
-        
-        # Convert to API format
-        api_results = []
-        for match in result.results:
-            api_results.append({
-                "cv_id": match.cv_id,
-                "score": match.overall_score,
-                "explanation": match.explanation,
-                "recommended_action": match.recommended_action,
-                "action_reason": match.action_reason,
-                "detailed_scores": {
-                    "skill_match": match.skill_match_score,
-                    "experience_match": match.experience_match_score,
-                    "education_match": match.education_match_score,
-                    "cultural_fit": match.cultural_fit_score,
-                    "growth_potential": match.growth_potential_score
-                },
-                "skills_analysis": {
-                    "matched": match.matched_skills,
-                    "missing": match.missing_skills,
-                    "transferable": match.transferable_skills
-                },
-                "confidence": match.confidence
-            })
-        
-        return {
-            "job_id": result.job_id,
-            "total_candidates": result.total_cvs,
-            "processed_candidates": result.processed_cvs,
-            "failed_candidates": result.failed_cvs,
-            "processing_time": result.processing_time,
-            "results": api_results,
-            "summary": result.summary,
-            "errors": result.errors
-        }
-        
-    except HTTPException:
-        raise
-    except Exception as e:
-        logger.error(f"Error getting batch job result: {str(e)}")
-        raise HTTPException(status_code=500, detail=f"Failed to get job result: {str(e)}")
-
-@app.get("/ai-agent/health")
-async def ai_agent_health_check():
-    """
-    Health check for AI Agent system
-    """
-    try:
-        health = await agent_integration_service.get_service_health()
-        return health
-        
-    except Exception as e:
-        logger.error(f"AI Agent health check failed: {str(e)}")
-        return {
-            "status": "unhealthy",
-            "error": str(e),
-            "timestamp": time.time()
-        }
-
-@app.get("/ai-agent/metrics")
-async def ai_agent_metrics():
-    """
-    Get AI Agent system performance metrics
-    """
-    try:
-        metrics = await agent_integration_service.get_performance_metrics()
-        return metrics
-        
-    except Exception as e:
-        logger.error(f"Failed to get AI Agent metrics: {str(e)}")
-        raise HTTPException(status_code=500, detail=f"Failed to get metrics: {str(e)}")
 
 if __name__ == "__main__":
     import socket

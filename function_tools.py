@@ -186,14 +186,13 @@ class AIAgentTools:
         
         Args:
             cv_id: ID của CV
-            job_id: ID của Job
-            
+            job_id: ID của Job            
         Returns:
             Dict chứa kết quả matching
         """
         try:
             # Import here to avoid circular import
-            from ai_agent import match_cvs_with_agent
+            from agent_integration_service import agent_integration_service
             
             # Get CV data
             cv_result = await self.get_cv_data(cv_id)
@@ -209,8 +208,8 @@ class AIAgentTools:
             cv_data = CvInput(**cv_result["data"])
             jd_data = JdInput(**job_result["data"])
             
-            # Perform matching
-            results = await match_cvs_with_agent([cv_data], jd_data)
+            # Perform matching using agent integration service
+            results = await agent_integration_service.match_cvs_with_agents([cv_data], jd_data)
             
             if results:
                 result = results[0]

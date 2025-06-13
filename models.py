@@ -39,17 +39,3 @@ class CvMatchResult(BaseModel):
     phone: Optional[str] = None
     recommended_action: Optional[str] = None
     action_reason: Optional[str] = None
-
-class ActionRecommendation(BaseModel):
-    action_type: str  # "send_contact_email", "save_cv"
-    priority: str  # "high", "medium", "low"
-    reason: str
-    suggested_next_steps: Optional[List[str]] = None
-
-class AIAgentRecommendation(BaseModel):
-    cv_id: str
-    job_id: str
-    match_score: float
-    match_explanation: str
-    recommended_actions: List[ActionRecommendation]
-    hr_notes: Optional[str] = None
