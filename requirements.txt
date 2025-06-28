@@ -14,3 +14,6 @@ openai==1.54.3
 
 # Additional utilities for OpenAI integration
 tiktoken==0.8.0
+
+# Scheduling
+schedule==1.2.0

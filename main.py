@@ -2,11 +2,15 @@ import httpx
 import json
 import logging
 import time
+from datetime import datetime
 from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
-from typing import List, Optional
+from typing import List, Optional, Dict, Any
 from models import CvInput, JdInput, CvMatchResult, ProjectInput, LanguageInput
 from agent_integration_service import agent_integration_service
+from job_recommendation_service import job_recommendation_service
+from job_recommendation_db import job_recommendation_db
+from pagination_helpers import get_all_recommended_jobs_for_user
 import uvicorn
 from dotenv import load_dotenv
 import os
@@ -200,6 +204,155 @@ async def match_all_cvs(job_id: str, skill_filter: Optional[str] = None, use_ai_
     except Exception as e:
         logger.error(f"Internal server error: {str(e)}")
         raise HTTPException(status_code=500, detail=f"Internal server error: {str(e)}")
+
+@app.post("/recommend-jobs/process-all")
+async def process_all_job_recommendations(min_score: float = 50.0):
+    """
+    Process job recommendations for ALL users with default CVs
+    This is the main API to trigger evaluation of all CV-Job matches
+    """
+    try:
+        start_time = datetime.now()
+        logger.info("Starting job recommendation processing for all users")
+        
+        headers = {"Authorization": f"Bearer {JWT_TOKEN}"}
+        
+        # Get all default CVs
+        async with httpx.AsyncClient() as client:
+            cv_response = await client.get("http://localhost:8080/api/v1/cv/default-all", headers=headers)
+            cv_response.raise_for_status()
+            cv_data_response = cv_response.json()
+            
+            # Extract CVs from response structure  
+            all_cv_data = cv_data_response.get("data", [])
+            if isinstance(all_cv_data, dict) and "content" in all_cv_data:
+                all_cv_data = all_cv_data["content"]
+        
+        logger.info(f"Found {len(all_cv_data)} default CVs to process")
+          # Prepare CV data with CV ID
+        user_cv_data = []
+        for cv in all_cv_data:
+            cv_id = cv.get("id")  # Get CV ID from response
+            if cv_id:
+                # Extract user info for user_id (for saving recommendations)
+                user_id = None
+                if "info" in cv and cv["info"]:
+                    user_id = cv["info"].get("id") or cv["info"].get("userId")
+                
+                # Use CV ID as primary identifier, fallback to email if no user ID
+                if not user_id and "info" in cv and cv["info"]:
+                    user_id = cv["info"].get("email", cv_id)  # Use email or CV ID as user identifier
+                
+                user_cv_data.append({
+                    "cv_id": cv_id,
+                    "user_id": user_id or cv_id,  # Fallback to CV ID if no user ID
+                    "cv_data": cv
+                })
+          # Get recommended jobs for each CV
+        all_recommendations = {}
+        processed_users = 0
+        total_jobs_analyzed = 0
+        
+        for user_cv in user_cv_data:
+            cv_id = user_cv["cv_id"]
+            user_id = user_cv["user_id"]
+            cv_data = user_cv["cv_data"]
+            
+            try:
+                # Get jobs for this CV using CV ID
+                user_jobs = await get_all_recommended_jobs_for_user(cv_id, headers)
+                total_jobs_analyzed += len(user_jobs)
+                
+                if user_jobs:                    # Generate recommendations using AI Agent
+                    recommendations = await job_recommendation_service.recommend_jobs_for_candidate(
+                        cv_data=cv_data,
+                        job_list=user_jobs,                        user_id=user_id,
+                        cv_id=cv_id,
+                        min_score=min_score
+                    )
+                    all_recommendations[user_id] = recommendations
+                    processed_users += 1
+                    logger.info(f"Generated {len(recommendations)} recommendations for CV {cv_id} (user {user_id})")
+                else:
+                    all_recommendations[user_id] = []
+                    logger.warning(f"No jobs found for CV {cv_id} (user {user_id})")
+                    
+            except Exception as e:
+                logger.error(f"Failed to process CV {cv_id} (user {user_id}): {str(e)}")
+                all_recommendations[user_id] = []
+        
+        # Save all recommendations in batch
+        save_results = await job_recommendation_db.save_job_recommendations_batch_by_user(all_recommendations)
+        
+        end_time = datetime.now()
+        duration = end_time - start_time
+        
+        result = {
+            "success": True,
+            "processing_summary": {
+                "total_cvs_found": len(all_cv_data),
+                "processed_users": processed_users,
+                "total_jobs_analyzed": total_jobs_analyzed,
+                "total_recommendations_generated": sum(len(recs) for recs in all_recommendations.values()),
+                "total_recommendations_saved": save_results["saved_recommendations"],
+                "min_score_threshold": min_score
+            },
+            "timing": {
+                "started_at": start_time.isoformat(),
+                "completed_at": end_time.isoformat(),
+                "duration_seconds": duration.total_seconds()
+            },
+            "user_breakdown": {
+                user_id: {
+                    "recommendations_count": len(recommendations)
+                }
+                for user_id, recommendations in all_recommendations.items()
+                if len(recommendations) > 0
+            },
+            "ai_agent_processing": {
+                "enabled": True,
+                "processing_method": "ai_agents_cv_to_jobs_batch",
+                "agents_used": ["cv_analyzer", "jd_analyzer", "job_recommendation_agent"]
+            }
+        }
+        
+        logger.info(f"Job recommendation processing completed in {duration}")
+        return result
+
+    except Exception as e:
+        logger.error(f"Job recommendation processing failed: {str(e)}")
+        raise HTTPException(status_code=500, detail=f"Processing error: {str(e)}")
+
+@app.post("/recommend-jobs/trigger-scheduled-job")
+async def trigger_scheduled_job():
+    """
+    Manually trigger the scheduled job workflow:
+    1. Clear all existing recommendations
+    2. Process all CV-Job matches
+    """
+    try:
+        headers = {"Authorization": f"Bearer {JWT_TOKEN}"}
+        
+        # Step 1: Clear all existing recommendations
+        async with httpx.AsyncClient() as client:
+            clear_url = "http://localhost:8080/api/v1/recommends/clear-all"
+            clear_response = await client.delete(clear_url, headers=headers)
+            clear_response.raise_for_status()
+            logger.info("Successfully cleared all existing recommendations")
+        
+        # Step 2: Process all recommendations
+        process_result = await process_all_job_recommendations(min_score=50.0)
+        
+        return {
+            "message": "Scheduled job workflow completed successfully",
+            "clear_completed": True,
+            "process_result": process_result
+        }
+        
+    except Exception as e:
+        logger.error(f"Error in scheduled job workflow: {str(e)}")
+        raise HTTPException(status_code=500, detail=str(e))
+
 
 if __name__ == "__main__":
     import socket
